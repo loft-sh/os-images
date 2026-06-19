@@ -10,11 +10,15 @@ UBUNTU_ARCH      ?= amd64
 
 BASE_IMAGE_URL   ?= https://cloud-images.ubuntu.com/$(UBUNTU_RELEASE)/current/$(UBUNTU_RELEASE)-server-cloudimg-$(UBUNTU_ARCH).img
 BASE_IMAGE       ?= $(UBUNTU_RELEASE)-server-cloudimg-$(UBUNTU_ARCH).img
-TARGET_IMAGE     ?= $(UBUNTU_RELEASE)-mdraid-$(UBUNTU_ARCH).qcow2
+TARGET_IMAGE     ?= $(UBUNTU_RELEASE)-server-cloudimg-$(UBUNTU_ARCH)-mdraid.img
 
 MDADM_CONF       ?= mdadm.conf
 
-.PHONY: all base image clean clobber
+RELEASE_TAG      ?=
+RELEASE_ARCH     ?= amd64 arm64
+RELEASE_IMAGES   := $(foreach a,$(RELEASE_ARCH),$(UBUNTU_RELEASE)-server-cloudimg-$(a)-mdraid.img)
+
+.PHONY: all base image release clean clobber
 
 all: image
 
@@ -37,8 +41,22 @@ $(TARGET_IMAGE): $(BASE_IMAGE) $(MDADM_CONF)
 		--run-command 'rm -rf /var/lib/apt/lists/*'
 	virt-sparsify --in-place $@
 
+# Publish a release from images already present locally - it never builds.
+# Build each arch elsewhere with 'make image UBUNTU_ARCH=<arch>', copy the
+# resulting $(RELEASE_IMAGES) here, then run this. RELEASE_ARCH tokens must
+# match Ubuntu's cloud-image arch naming (amd64, arm64).
+release:
+	@test -n "$(RELEASE_TAG)" || { echo "set RELEASE_TAG, e.g. make release RELEASE_TAG=v20260618"; exit 1; }
+	@for img in $(RELEASE_IMAGES); do \
+		test -f $$img || { echo "missing $$img - build it with 'make image UBUNTU_ARCH=<arch>' and copy it here"; exit 1; }; \
+	done
+	gh release create $(RELEASE_TAG) $(RELEASE_IMAGES) \
+		--title $(RELEASE_TAG) \
+		--prerelease \
+		--notes "$$(printf '## SHA256\n```\n%s\n```' "$$(sha256sum $(RELEASE_IMAGES))")"
+
 clean:
-	rm -f $(TARGET_IMAGE)
+	rm -f $(TARGET_IMAGE) $(RELEASE_IMAGES)
 
 clobber: clean
 	rm -f $(BASE_IMAGE)

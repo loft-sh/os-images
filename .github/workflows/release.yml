@@ -42,19 +42,21 @@ jobs:
       - name: Enable KVM if available
         run: '[ -e /dev/kvm ] && sudo chmod 0666 /dev/kvm || true'
 
-      # Ubuntu 24.04's passt AppArmor profile (libguestfs 1.52.0, pre the
-      # 1.52.2-2 fix) permits passt's socket but denies opening its PID file in
-      # libguestfs' runtime dir, so passt exits 1 and any network --run-command
-      # fails. Unload the profile via securityfs (throwaway runner) - aa-complain
-      # can't parse its mount rules, and we remove by name to skip parsing the
-      # file. Debian #1086844.
-      - name: Neutralize passt AppArmor confinement
+      # Ubuntu 24.04 confines passt two ways, both of which break libguestfs'
+      # network appliance (passt exits 1, so any network --run-command fails):
+      #   1. passt's own AppArmor profile (libguestfs 1.52.0, pre the 1.52.2-2
+      #      fix) denies opening passt's PID file. Unload it via securityfs by
+      #      name - aa-complain can't parse its mount rules. Debian #1086844.
+      #   2. The kernel restricts unprivileged user namespaces, which passt
+      #      needs to sandbox itself ("unshare: Operation not permitted").
+      # Both are safe to drop on a throwaway runner.
+      - name: Lift passt's AppArmor and user-namespace confinement
         run: |
           echo -n passt | sudo tee /sys/kernel/security/apparmor/.remove >/dev/null
           if sudo aa-status | grep -qi passt; then
             echo "passt AppArmor profile still loaded" >&2; exit 1
           fi
-          echo "passt AppArmor profile unloaded"
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
       - name: Build image
         env:

@@ -41,18 +41,18 @@ $(TARGET_IMAGE): $(BASE_IMAGE) $(MDADM_CONF)
 		--run-command 'rm -rf /var/lib/apt/lists/*'
 	virt-sparsify --in-place $@
 
-# Publish a release from images already present locally - it never builds.
-# Build each arch elsewhere with 'make image UBUNTU_ARCH=<arch>', copy the
-# resulting $(RELEASE_IMAGES) here, then run this. RELEASE_ARCH tokens must
-# match Ubuntu's cloud-image arch naming (amd64, arm64).
+# Upload images to an existing release named RELEASE_TAG and set its notes -
+# it never builds and never creates the release. The release (created from any
+# branch, in the UI or via 'gh release create') is the trigger; CI builds each
+# arch natively, copies the resulting $(RELEASE_IMAGES) here, then runs this.
+# RELEASE_ARCH tokens must match Ubuntu's cloud-image arch naming (amd64, arm64).
 release:
 	@test -n "$(RELEASE_TAG)" || { echo "set RELEASE_TAG, e.g. make release RELEASE_TAG=v20260618"; exit 1; }
 	@for img in $(RELEASE_IMAGES); do \
 		test -f $$img || { echo "missing $$img - build it with 'make image UBUNTU_ARCH=<arch>' and copy it here"; exit 1; }; \
 	done
-	gh release create $(RELEASE_TAG) $(RELEASE_IMAGES) \
-		--title $(RELEASE_TAG) \
-		--prerelease \
+	gh release upload $(RELEASE_TAG) $(RELEASE_IMAGES) --clobber
+	gh release edit $(RELEASE_TAG) \
 		--notes "$$(printf '## SHA256\n```\n%s\n```' "$$(sha256sum $(RELEASE_IMAGES))")"
 
 clean:

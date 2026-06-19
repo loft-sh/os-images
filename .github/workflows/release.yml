@@ -45,12 +45,16 @@ jobs:
       # Ubuntu 24.04's passt AppArmor profile (libguestfs 1.52.0, pre the
       # 1.52.2-2 fix) permits passt's socket but denies opening its PID file in
       # libguestfs' runtime dir, so passt exits 1 and any network --run-command
-      # fails. Put the profile in complain mode (throwaway runner). Debian #1086844.
+      # fails. Unload the profile via securityfs (throwaway runner) - aa-complain
+      # can't parse its mount rules, and we remove by name to skip parsing the
+      # file. Debian #1086844.
       - name: Neutralize passt AppArmor confinement
         run: |
-          sudo apt-get install -y apparmor-utils
-          sudo aa-complain /usr/bin/passt
-          sudo aa-status | grep -i passt
+          echo -n passt | sudo tee /sys/kernel/security/apparmor/.remove >/dev/null
+          if sudo aa-status | grep -qi passt; then
+            echo "passt AppArmor profile still loaded" >&2; exit 1
+          fi
+          echo "passt AppArmor profile unloaded"
 
       - name: Build image
         env:

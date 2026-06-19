@@ -42,21 +42,26 @@ jobs:
       - name: Enable KVM if available
         run: '[ -e /dev/kvm ] && sudo chmod 0666 /dev/kvm || true'
 
-      # TEMP diagnostics for the passt failure - remove once the cause is known.
-      - name: Diagnose passt
+      # Ubuntu 24.04's passt AppArmor profile (libguestfs 1.52.0, pre the
+      # 1.52.2-2 fix) permits passt's socket but denies opening its PID file in
+      # libguestfs' runtime dir, so passt exits 1 and any network --run-command
+      # fails. Put the profile in complain mode (throwaway runner). Debian #1086844.
+      - name: Neutralize passt AppArmor confinement
         run: |
-          set -x
-          dpkg -l | grep -iE 'passt|guestfs' || true
-          command -v passt && passt --version || true
-          sudo aa-status 2>/dev/null | grep -i passt || true
-          ls -la /etc/apparmor.d/ | grep -i passt || true
-          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR TMPDIR=$TMPDIR uid=$(id -u)"
+          sudo apt-get install -y apparmor-utils
+          sudo aa-complain /usr/bin/passt
+          sudo aa-status | grep -i passt
 
       - name: Build image
         env:
           LIBGUESTFS_DEBUG: "1"
           LIBGUESTFS_TRACE: "1"
         run: make image UBUNTU_ARCH=${{ matrix.arch }}
+
+      # TEMP: if passt still fails, prove whether AppArmor is denying it.
+      - name: passt AppArmor denials
+        if: failure()
+        run: sudo dmesg | grep -i 'apparmor.*passt' || echo "no apparmor denials for passt"
 
       - uses: actions/upload-artifact@v4
         with:

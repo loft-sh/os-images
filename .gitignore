@@ -1,0 +1,3 @@
+# Build artifacts: base and mdraid cloud images
+*.img
+*.qcow2

@@ -1,0 +1,95 @@
+name: build and release
+
+# Publishing a (pre-)release fires this. The build matrix runs each arch on a
+# native runner (no emulation) and uploads the images to that same release.
+# Listening only on 'published' (not 'edited') means the release-notes update
+# below does not re-trigger the build. workflow_dispatch builds without
+# uploading, for smoke-testing the build itself.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install libguestfs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libguestfs-tools
+
+      # Ubuntu ships /boot/vmlinuz-* mode 0600; libguestfs must read it to boot
+      # its appliance.
+      - name: Make the kernel readable for libguestfs
+        run: sudo chmod 0644 /boot/vmlinuz-*
+
+      # Use KVM when the runner exposes it (typically amd64); a no-op when
+      # absent (arm64 falls back to TCG). Avoids the slow software-emulated boot.
+      - name: Enable KVM if available
+        run: '[ -e /dev/kvm ] && sudo chmod 0666 /dev/kvm || true'
+
+      # Ubuntu 24.04 confines passt two ways, both of which break libguestfs'
+      # network appliance (passt exits 1, so any network --run-command fails):
+      #   1. passt's own AppArmor profile (libguestfs 1.52.0, pre the 1.52.2-2
+      #      fix) denies opening passt's PID file. Unload it via securityfs by
+      #      name - aa-complain can't parse its mount rules. Debian #1086844.
+      #   2. The kernel restricts unprivileged user namespaces, which passt
+      #      needs to sandbox itself ("unshare: Operation not permitted").
+      # Both are safe to drop on a throwaway runner.
+      - name: Lift passt's AppArmor and user-namespace confinement
+        run: |
+          echo -n passt | sudo tee /sys/kernel/security/apparmor/.remove >/dev/null
+          if sudo aa-status | grep -qi passt; then
+            echo "passt AppArmor profile still loaded" >&2; exit 1
+          fi
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Build image
+        env:
+          LIBGUESTFS_DEBUG: "1"
+          LIBGUESTFS_TRACE: "1"
+        run: make image UBUNTU_ARCH=${{ matrix.arch }}
+
+      # TEMP: if passt still fails, prove whether AppArmor is denying it.
+      - name: passt AppArmor denials
+        if: failure()
+        run: sudo dmesg | grep -i 'apparmor.*passt' || echo "no apparmor denials for passt"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: noble-server-cloudimg-${{ matrix.arch }}-mdraid.img
+          path: noble-server-cloudimg-${{ matrix.arch }}-mdraid.img
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: github.event_name == 'release'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: .
+          merge-multiple: true
+
+      - name: Upload images to the release and set its notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: make release RELEASE_TAG=${{ github.event.release.tag_name }}
